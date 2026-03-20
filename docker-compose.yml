@@ -1,0 +1,101 @@
+version: '3.8'
+
+services:
+  # PostgreSQL with PgVector extension
+  postgres-vector:
+    image: pgvector/pgvector:pg16
+    container_name: sentinai_postgres_vector
+    environment:
+      POSTGRES_USER: sentinai_user
+      POSTGRES_PASSWORD: sentinai_password
+      POSTGRES_DB: sentinai_core
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_vector_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - sentinai-net
+
+  # TimescaleDB for time-series / IoT telemetry ingestion
+  timescaledb:
+    image: timescale/timescaledb-ha:pg15-latest
+    container_name: sentinai_timescaledb
+    environment:
+      POSTGRES_USER: timescale_user
+      POSTGRES_PASSWORD: timescale_password
+      POSTGRES_DB: sentinai_telemetry
+    ports:
+      - "5433:5432"
+    volumes:
+      - timescale_data:/home/postgres/pgdata/data
+    restart: unless-stopped
+    networks:
+      - sentinai-net
+
+  # Redis for fast caching and ephemeral states
+  redis:
+    image: redis:7-alpine
+    container_name: sentinai_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+    networks:
+      - sentinai-net
+
+  # EMQX for MQTT broker (IoT communication)
+  emqx:
+    image: emqx:5.5.0
+    container_name: sentinai_emqx
+    environment:
+      EMQX_NODE_NAME: emqx@node1.emqx.io
+      EMQX_ALLOW_ANONYMOUS: "true"
+    ports:
+      - "1883:1883"     # MQTT TCP port
+      - "8083:8083"     # MQTT over WebSocket
+      - "8084:8084"     # MQTT over WebSocket SSL
+      - "8883:8883"     # MQTT over SSL (MQTTS)
+      - "18083:18083"   # EMQX Dashboard
+    volumes:
+      - emqx_data:/opt/emqx/data
+      - emqx_log:/opt/emqx/log
+    restart: unless-stopped
+    networks:
+      - sentinai-net
+
+  # Kafka (KRaft mode, no Zookeeper needed)
+  kafka:
+    image: bitnamilegacy/kafka:3.8.1
+    container_name: sentinai_kafka
+    environment:
+      - KAFKA_CFG_NODE_ID=1
+      - KAFKA_CFG_PROCESS_ROLES=controller,broker
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+    ports:
+      - "9092:9092"
+      - "9094:9094"
+    volumes:
+      - kafka_data:/bitnami/kafka
+    restart: unless-stopped
+    networks:
+      - sentinai-net
+
+volumes:
+  postgres_vector_data:
+  timescale_data:
+  redis_data:
+  emqx_data:
+  emqx_log:
+  kafka_data:
+
+networks:
+  sentinai-net:
+    driver: bridge

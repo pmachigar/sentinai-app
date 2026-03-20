@@ -1,0 +1,114 @@
+name: "Web Dashboard CI/CD Pipeline (Next.js)"
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'frontend/web-dashboard/**'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'frontend/web-dashboard/**'
+
+env:
+  WORKING_DIR: frontend/web-dashboard
+
+jobs:
+  # =========================================================
+  # CI JOB: Compilación, Linting y Type Checking Estricto
+  # =========================================================
+  web_ci:
+    name: "Continuous Integration (Next.js)"
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup NodeJS Runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Sistema de Caché Optimizado (Acelera el Runtime en >50%)
+      - name: Configurar Caché para Dependencias y .next
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.WORKING_DIR }}/node_modules
+            ${{ env.WORKING_DIR }}/.next/cache
+          # Hash determinístico basado en el árbol de dependencias y el código fuente Next.js
+          key: ${{ runner.os }}-nextjs-${{ hashFiles('**/package-lock.json') }}-${{ hashFiles('**/*.js', '**/*.jsx', '**/*.ts', '**/*.tsx') }}
+          restore-keys: |
+            ${{ runner.os }}-nextjs-${{ hashFiles('**/package-lock.json') }}-
+
+      - name: Instalar Dependencias (NPM Clean Install)
+        run: npm ci
+
+      - name: Ejecutar Linter (Code Style y Tipos)
+        run: npm run lint
+
+      # Verificar que la app transpila correctamente a un bundle productivo
+      - name: Compilar (Build Next.js)
+        run: npm run build
+        env:
+          # Inyección de Mocks para evitar fallos de build-time por variables inexistentes
+          NEXT_PUBLIC_API_URL: "http://build-time-mocked.local"
+          NEXT_PUBLIC_STRIPE_KEY: "pk_test_build"
+
+  # =========================================================
+  # CD JOB: Despliegue Automatizado a EDGE (ej. Vercel)
+  # =========================================================
+  web_cd_deploy:
+    name: "Continuous Deployment (Vercel Prod)"
+    needs: web_ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Restaurar Caché de Next.js
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.WORKING_DIR }}/node_modules
+            ${{ env.WORKING_DIR }}/.next/cache
+          key: ${{ runner.os }}-nextjs-${{ hashFiles('**/package-lock.json') }}-${{ hashFiles('**/*.js', '**/*.jsx', '**/*.ts', '**/*.tsx') }}
+
+      - name: Instalar CLI de Vercel
+        run: npm install --global vercel@latest
+
+      - name: Vincular Entorno (Vercel Pull)
+        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      # Build oficial productivo inyectando Secretos Reales de Producción
+      - name: Generar Artefactos de Producción
+        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          
+          # ---> Inyección Crítica: Variables de Entorno Públicas de NextJS
+          NEXT_PUBLIC_API_URL: ${{ secrets.PROD_API_URL }}
+          NEXT_PUBLIC_STRIPE_KEY: ${{ secrets.STRIPE_LIVE_PUBLISHABLE_KEY }}
+
+      - name: Desplegar en la Nube Perimetral (Edge Deploy)
+        run: vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}

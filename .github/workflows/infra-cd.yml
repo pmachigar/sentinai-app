@@ -1,0 +1,132 @@
+name: "Terraform Multi-Cloud Continuous Deployment"
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'infrastructure/**'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'infrastructure/**'
+
+jobs:
+  # JOB 1: Evaluación y Comentario de Modificaciones (CI)
+  terraform_plan:
+    name: "Plan (${{ matrix.cloud }})"
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    
+    # Empleamos una matriz estratégica para iterar dinámicamente nuestra arquitectura Multi-Cloud (aws, gcp, azure)
+    strategy:
+      matrix:
+        cloud: [aws, gcp, azure]
+    
+    # Principio de Seguridad: Inyección de Credenciales Cloud a través de GitHub Secrets
+    env:
+      # AWS
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      # GCP
+      GOOGLE_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
+      # Azure
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+    defaults:
+      run:
+        working-directory: infrastructure/${{ matrix.cloud }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # Usando la acción oficial de HashiCorp para estabilizar el binario e interactuar con Terraform
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Format Check
+        id: fmt
+        run: terraform fmt -check
+        continue-on-error: true
+
+      - name: Terraform Init
+        id: init
+        run: terraform init
+
+      - name: Terraform Plan
+        id: plan
+        run: terraform plan -no-color -out=tfplan
+        continue-on-error: true
+
+      # Output asíncrono hacia el mismo Pull Request para que el Reviewer vea el impacto
+      - name: Update PR with Terraform Plan
+        uses: actions/github-script@v7
+        env:
+          PLAN: "terraform\n${{ steps.plan.outputs.stdout }}"
+          CLOUD: ${{ matrix.cloud }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const output = `### Terraform Plan for \`${process.env.CLOUD}\`
+            #### Format and Style 🖌\`${{ steps.fmt.outcome }}\`
+            #### Initialization ⚙️\`${{ steps.init.outcome }}\`
+            #### Plan 📖\`${{ steps.plan.outcome }}\`
+
+            <details><summary>Mostrar el Plan detallado</summary>
+
+            \`\`\`\n
+            ${process.env.PLAN}
+            \`\`\`
+
+            </details>
+
+            *Pusher: @${{ github.actor }}, Action: \`${{ github.event_name }}\`, Target Clúster: \`${process.env.CLOUD}\`*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            })
+
+  # JOB 2: Aprobación y Modificación Estructural de Infraestructura (CD)
+  terraform_apply:
+    name: "Apply (${{ matrix.cloud }})"
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 1 # Para evitar condiciones de carrera o state-locks cruzados si aplica.
+      matrix:
+        cloud: [aws, gcp, azure]
+
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      GOOGLE_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+    defaults:
+      run:
+        working-directory: infrastructure/${{ matrix.cloud }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        run: terraform init
+
+      # Sólo corre si fue mergeado directamente a Main (Push). Ejecuta sin pedir input para pipelines automatizados.
+      - name: Terraform Apply
+        run: terraform apply -auto-approve
